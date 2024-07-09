@@ -99,6 +99,12 @@ class RedmountainEnv(gym.Env):
         "render_modes": ["human", "rgb_array"],
         "render_fps": 30,
     }
+    
+    redinfo = {
+        "red_body_mass": 0.5,
+        "red_wheel_mass": 0.1,
+        "red_tale_mass": 0.05,
+    }
 
     def __init__(self, render_mode: Optional[str] = None, goal_velocity=0):
         # 丘の左端が-1.2
@@ -124,7 +130,7 @@ class RedmountainEnv(gym.Env):
 
         # レンダリングのモード
         # self.render_mode = render_mode
-        self.render_mode="rgb_array"
+        self.render_mode = self.metadata["render_modes"][1]
 
         # レンダリング時の各種設定
         self.screen_width = 600
@@ -132,6 +138,11 @@ class RedmountainEnv(gym.Env):
         self.screen = None
         self.clock = None
         self.isopen = True
+
+        self.pos = 0.0
+        self.scale = 1.0
+        self.clearance = 10
+        self.height_func = lambda x: 0.0
 
         # アクション3種類: [左に加速、何もしない、右に加速]
         self.action_space = spaces.Discrete(3)
@@ -214,8 +225,6 @@ class RedmountainEnv(gym.Env):
 
         world_width = self.max_position - self.min_position
         scale = self.screen_width / world_width
-        carwidth = 40
-        carheight = 20
 
         self.surf = pygame.Surface((self.screen_width, self.screen_height))
         self.surf.fill((255, 255, 255))
@@ -230,33 +239,46 @@ class RedmountainEnv(gym.Env):
 
         clearance = 10
 
-        l, r, t, b = -carwidth / 2, carwidth / 2, carheight, 0
-        coords = []
-        for c in [(l, b), (l, t), (r, t), (r, b)]:
-            c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
-            coords.append(
-                (
-                    c[0] + (pos - self.min_position) * scale,
-                    c[1] + clearance + self._height(pos) * scale,
-                )
-            )
+        # 車体が四角形の場合
+        # carwidth = 40
+        # carheight = 20
+        # l, r, t, b = -carwidth / 2, carwidth / 2, carheight, 0
+        # coords = []
+        # for c in [(l, b), (l, t), (r, t), (r, b)]:
+        #     c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
+        #     coords.append(
+        #         (
+        #             c[0] + (pos - self.min_position) * scale,
+        #             c[1] + clearance + self._height(pos) * scale,
+        #         )
+        #     )
+        # gfxdraw.aapolygon(self.surf, coords, (0, 0, 0))
+        # gfxdraw.filled_polygon(self.surf, coords, (0, 0, 0))
 
-        gfxdraw.aapolygon(self.surf, coords, (0, 0, 0))
-        gfxdraw.filled_polygon(self.surf, coords, (0, 0, 0))
+        # 車体が円の場合
+        # 車体の幅と高さを同じ値に設定する（ここでは直径として考える）
+        self.carwidth = 40
+        self.carheight = 40
 
-        for c in [(carwidth / 4, 0), (-carwidth / 4, 0)]:
-            c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
-            wheel = (
-                int(c[0] + (pos - self.min_position) * scale),
-                int(c[1] + clearance + self._height(pos) * scale),
-            )
+        gfxdraw.aacircle(self.surf,
+                        int((pos - self.min_position) * self.scale)+100, 
+                        int(-self.carwidth / 2 + clearance + self._height(pos) * scale),
+                        int(self.carheight / 2),
+                        (128, 128, 128))
 
-            gfxdraw.aacircle(
-                self.surf, wheel[0], wheel[1], int(carheight / 2.5), (128, 128, 128)
-            )
-            gfxdraw.filled_circle(
-                self.surf, wheel[0], wheel[1], int(carheight / 2.5), (128, 128, 128)
-            )
+        # for c in [(self.carwidth / 4, 0), (-self.carwidth / 4, 0)]:
+        #     c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
+        #     wheel = (
+        #         int(c[0] + (pos - self.min_position) * scale),
+        #         int(c[1] + clearance + self._height(pos) * scale),
+        #     )
+
+        #     gfxdraw.aacircle(
+        #         self.surf, wheel[0], wheel[1], int(self.carheight / 2.5), (128, 128, 128)
+        #     )
+        #     gfxdraw.filled_circle(
+        #         self.surf, wheel[0], wheel[1], int(self.carheight / 2.5), (128, 128, 128)
+        #     )
 
         flagx = int((self.goal_position - self.min_position) * scale)
         flagy1 = int(self._height(self.goal_position) * scale)

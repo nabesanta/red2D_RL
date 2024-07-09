@@ -3,11 +3,6 @@ import gym
 import numpy as np
 import matplotlib.pyplot as plt
 
-import gym
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-
 class Q:
     def __init__(self, env):
         self.env = env
@@ -35,7 +30,7 @@ class Q:
             else:
                 return np.argmax(self.q_table[p, v])
 
-    def learn(self, time=5000, alpha=0.4, gamma=0.99):
+    def learn(self, time=100, alpha=0.4, gamma=0.99):
         log = []
         for j in range(time):
             total = 0
@@ -57,35 +52,22 @@ class Q:
             log.append(total)
             if j % 100 == 0:
                 print(f"{j} ===total reward=== : {total}")
-        plt.plot(log)
-        plt.xlabel('Episode')
-        plt.ylabel('Total Reward')
-        plt.title('Training Progress')
-        plt.show()
+        # plt.plot(log)
+        # plt.xlabel('Episode')
+        # plt.ylabel('Total Reward')
+        # plt.title('Training Progress')
+        # plt.show()s
 
     def render(self):
         s = self.env.reset()
         img = self.env.render()
-        return img
+        plt.imshow(img)
+        plt.axis('off')
+        plt.show()
+        self.env.close()
 
-# 環境の作成
 env = gym.make('redenv-v0')
-
-# エージェントの初期化と学習
 agent = Q(env)
 agent.learn()
+agent.render()
 
-fig, ax = plt.subplots()
-imgs = []
-for episode in range(10):  # 最初の10エピソード分のアニメーションを作成
-    s = env.reset()
-    done = False
-    while not done:
-        img = agent.render()
-        imgs.append([ax.imshow(img)])
-        a = agent.policy(s)
-        s, _, done, _, _ = env.step(a)
-
-ani = animation.ArtistAnimation(fig, imgs, interval=50, blit=True)
-plt.axis('off')
-plt.show()
