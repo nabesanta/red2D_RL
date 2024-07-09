@@ -75,7 +75,6 @@ env = gym.make('redenv-v0')
 agent = Q(env)
 agent.learn()
 
-# アニメーションの作成
 fig, ax = plt.subplots()
 imgs = []
 for episode in range(10):  # 最初の10エピソード分のアニメーションを作成
