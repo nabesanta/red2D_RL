@@ -12,18 +12,31 @@ from IPython import display
 import redenv
 import gym
 # 機械学習関連
+# chainer
 import chainer
 import chainer.functions as F
 import chainer.links as L
 from chainer import Variable, optimizers, serializers
 from chainer import Chain
+# torch
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 
 # 各種設定
 np.random.seed(0)
 # 過去何ステップ分の状態量を使うか
 STATE_NUM = 10
 
+print(torch.cuda.is_available())
+print(torch.cuda.device_count())
+print(torch.cuda.get_device_name())
+# GeForce GTX 1080 Ti
+print(torch.cuda.get_device_capability())
+# (6, 1)
 # Q Network Definition
+
 class Q(Chain):
     def __init__(self, state_num=STATE_NUM):
         super(Q, self).__init__()
@@ -243,7 +256,10 @@ class Simulator:
 
 
 if __name__ == '__main__':
-    env = gym.make('redenv-v0') 
+    env = gym.make('redenv-v0')
+    print("observation space num: ", env.observation_space.shape[0])
+    print("action space num: ", env.action_space.n)
+
     agent = DoubleDQNAgent()
     sim = Simulator(env, agent)
     model_dir = '/home/nabesanta/red2D_RL/src/model/'

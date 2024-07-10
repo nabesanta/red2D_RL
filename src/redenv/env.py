@@ -191,7 +191,6 @@ class RedmountainEnv(gym.Env):
         # 尻尾書くよ
         self.wheelRadius = 20
         self.rad = math.atan(1.35*math.cos(3*pos))
-        print(self.rad/3.141592*180)
         l, r, t, b = -self.wheelRadius, 0, 5, 0
         coords = []
         for c in [(l, b), (l, t), (r, t), (r, b)]:
