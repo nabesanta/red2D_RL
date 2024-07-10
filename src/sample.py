@@ -1,3 +1,16 @@
+#!/usr/bin/env python3
+import copy
+import time
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.autograd import Variable
+import gym
+from gym import wrappers
 # 環境
 MONITOR = False
 env = gym.make("CartPole-v0")
@@ -39,6 +52,9 @@ TRAIN_FREQ = 10 # Q関数の学習間隔
 UPDATE_TARGET_Q_FREQ = 20 # Q関数の更新間隔
 GAMMA = 0.97 # 割引率
 LOG_FREQ = 1000 # ログ出力の間隔
+
+# gym環境
+env = gym.make("CartPole-v0")
 
 # モデル
 Q = NN() # 近似Q関数
