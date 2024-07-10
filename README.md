@@ -68,6 +68,8 @@ The episode ends if either of the following happens:
 
 
 ### Arguments
+![output1](https://github.com/nabesanta/red2D_RL/assets/107094464/f8525d90-2751-41a2-af2a-6f20c93c5ac3)
+
 
 ```
 gym.make('MountainCar-v0')
