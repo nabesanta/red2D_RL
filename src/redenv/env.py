@@ -190,11 +190,13 @@ class RedmountainEnv(gym.Env):
         
         # 尻尾書くよ
         self.wheelRadius = 20
-        l, r, t, b = -self.wheelRadius+5, self.wheelRadius-5, 5, 0
+        self.rad = math.atan(1.35*math.cos(3*pos))
+        print(self.rad/3.141592*180)
+        l, r, t, b = -self.wheelRadius, 0, 5, 0
         coords = []
         for c in [(l, b), (l, t), (r, t), (r, b)]:
-            c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos) + 0.8)
-            coords.append((c[0] + (pos - self.min_position) * scale - self.wheelRadius, c[1] + self.clearance + self._height(pos) * scale))
+            c = pygame.math.Vector2(c).rotate_rad(math.atan(1.35*math.cos(3*pos)) + 0.8)
+            coords.append((c[0] + (pos - self.min_position) * scale - (self.wheelRadius-3)*math.cos(abs(math.atan(1.35*math.cos(3*pos)))), c[1] + (self.wheelRadius) +(self.wheelRadius)*math.sin(-(math.atan(1.35*math.cos(3*pos)))) + self._height(pos) * scale))
         gfxdraw.aapolygon(self.surf, coords, (255, 0, 0))
         gfxdraw.filled_polygon(self.surf, coords, (255, 0, 0))
         
