@@ -2,11 +2,12 @@
 http://incompleteideas.net/MountainCar/MountainCar1.cp
 permalink: https://perma.cc/6Z2N-PFWC
 """
+# 演算系ライブラリ
 import math
+import numpy as np
 from typing import Optional
 
-import numpy as np
-
+# 強化学習系
 import gym
 from gym import spaces
 from gym.envs.classic_control import utils
@@ -14,92 +15,12 @@ from gym.error import DependencyNotInstalled
 
 
 class RedmountainEnv(gym.Env):
-    """
-    ### Description
-
-    The Mountain Red MDP is a deterministic MDP that consists of a car placed stochastically
-    at the bottom of a sinusoidal valley, with the only possible actions being the accelerations
-    that can be applied to the car in either direction. The goal of the MDP is to strategically
-    accelerate the car to reach the goal state on top of the right hill. There are two versions
-    of the mountain car domain in gym: one with discrete actions and one with continuous.
-    This version is the one with discrete actions.
-
-    This MDP first appeared in [Andrew Moore's PhD Thesis (1990)](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-209.pdf)
-
-    ```
-    @TECHREPORT{Moore90efficientmemory-based,
-        author = {Andrew William Moore},
-        title = {Efficient Memory-based Learning for Robot Control},
-        institution = {University of Cambridge},
-        year = {1990}
-    }
-    ```
-
-    ### Observation Space
-
-    The observation is a `ndarray` with shape `(2,)` where the elements correspond to the following:
-
-    | Num | Observation                          | Min  | Max | Unit         |
-    |-----|--------------------------------------|------|-----|--------------|
-    | 0   | position of the car along the x-axis | -Inf | Inf | position (m) |
-    | 1   | velocity of the car                  | -Inf | Inf | position (m) |
-
-    ### Action Space
-
-    There are 3 discrete deterministic actions:
-
-    | Num | Observation             | Value | Unit         |
-    |-----|-------------------------|-------|--------------|
-    | 0   | Accelerate to the left  | Inf   | position (m) |
-    | 1   | Don't accelerate        | Inf   | position (m) |
-    | 2   | Accelerate to the right | Inf   | position (m) |
-
-    ### Transition Dynamics:
-
-    Given an action, the mountain car follows the following transition dynamics:
-
-    *velocity<sub>t+1</sub> = velocity<sub>t</sub> + (action - 1) * force - cos(3 * position<sub>t</sub>) * gravity*
-
-    *position<sub>t+1</sub> = position<sub>t</sub> + velocity<sub>t+1</sub>*
-
-    where force = 0.001 and gravity = 0.0025. The collisions at either end are inelastic with the velocity set to 0
-    upon collision with the wall. The position is clipped to the range `[-1.2, 0.6]` and
-    velocity is clipped to the range `[-0.07, 0.07]`.
-
-
-    ### Reward:
-
-    The goal is to reach the flag placed on top of the right hill as quickly as possible, as such the agent is
-    penalised with a reward of -1 for each timestep.
-
-    ### Starting State
-
-    The position of the car is assigned a uniform random value in *[-0.6 , -0.4]*.
-    The starting velocity of the car is always assigned to 0.
-
-    ### Episode End
-
-    The episode ends if either of the following happens:
-    1. Termination: The position of the car is greater than or equal to 0.5 (the goal position on top of the right hill)
-    2. Truncation: The length of the episode is 200.
-
-
-    ### Arguments
-
-    ```
-    gym.make('MountainCar-v0')
-    ```
-
-    ### Version History
-
-    * v0: Initial versions release (1.0.0)
-    """
-
     metadata = {
         "render_modes": ["human", "rgb_array"],
         "render_fps": 30,
     }
     
+    # 単位[m]
     redinfo = {
         "red_body_mass": 0.5,
         "red_wheel_mass": 0.1,
@@ -122,6 +43,8 @@ class RedmountainEnv(gym.Env):
         self.force = 0.001
         # 重力
         self.gravity = 0.0025
+        # 尻尾の摩擦
+        self.friction = 0.0005
 
         # 位置と速度の最小値
         self.low = np.array([self.min_position, -self.max_speed], dtype=np.float32)
@@ -130,6 +53,9 @@ class RedmountainEnv(gym.Env):
 
         # レンダリングのモード
         # self.render_mode = render_mode
+        # human
+        self.render_mode = self.metadata["render_modes"][0]
+        # rgb_array
         self.render_mode = self.metadata["render_modes"][1]
 
         # レンダリング時の各種設定
@@ -139,6 +65,7 @@ class RedmountainEnv(gym.Env):
         self.clock = None
         self.isopen = True
 
+        # 描画のパラメータ
         self.pos = 0.0
         self.scale = 1.0
         self.clearance = 10
@@ -156,18 +83,21 @@ class RedmountainEnv(gym.Env):
 
         position, velocity = self.state
         # 今の速度だから、一個前のアクションと今のポジションを参照？
-        velocity += (action - 1) * self.force + math.cos(3 * position) * (-self.gravity)
+        # math.cos(3 * position) * (-self.gravity): 坂に働く重力の影響
+        velocity += (action-1) * self.force + math.cos(3 * position) * (-self.gravity) + math.cos(3 * position) * (-self.friction)
+        # 速度は-0.07~0.07
         velocity = np.clip(velocity, -self.max_speed, self.max_speed)
+        # 位置は単純積分
         position += velocity
+        # 位置は-1.2~0.6
         position = np.clip(position, self.min_position, self.max_position)
         if position == self.min_position and velocity < 0:
             velocity = 0
-
-        terminated = bool(
-            position >= self.goal_position and velocity >= self.goal_velocity
-        )
+        # 終了判定は、ゴールの位置にたどり着き速度が0以上
+        terminated = bool(position >= self.goal_position and velocity >= self.goal_velocity)
+        # 毎ステップ-1.0
         reward = -1.0
-
+        # 状態は（位置、速度）
         self.state = (position, velocity)
         if self.render_mode == "human":
             self.render()
@@ -192,7 +122,7 @@ class RedmountainEnv(gym.Env):
         return np.array(self.state, dtype=np.float32), {}
 
     def _height(self, xs):
-        return np.sin(3 * xs) * 0.45 + 0.55
+        return 0.45 * np.sin(3 * xs) + 0.55
 
     def render(self):
         if self.render_mode is None:
@@ -202,7 +132,7 @@ class RedmountainEnv(gym.Env):
                 f'e.g. gym("{self.spec.id}", render_mode="rgb_array")'
             )
             return
-
+        # renderに必要なgfxdrawライブラリのインポート
         try:
             import pygame
             from pygame import gfxdraw
@@ -223,62 +153,63 @@ class RedmountainEnv(gym.Env):
         if self.clock is None:
             self.clock = pygame.time.Clock()
 
+        # simulation世界の横幅
+        # world_width = 0.6 - (-1.2) = 1.8
         world_width = self.max_position - self.min_position
+        # 600/1.8 = 1000/3 = 333.3333…
         scale = self.screen_width / world_width
-
+        # 描画画面のサイズ
         self.surf = pygame.Surface((self.screen_width, self.screen_height))
+        # 描画画面の背景色
         self.surf.fill((255, 255, 255))
-
+        # 初期位置
         pos = self.state[0]
-
+        # 放物線上のx座標
         xs = np.linspace(self.min_position, self.max_position, 100)
+        # 放物線上のy座標
         ys = self._height(xs)
+        # レンダリングの画面に合わせてサイズアップ
         xys = list(zip((xs - self.min_position) * scale, ys * scale))
 
+        # 画面の枠と坂のレンダリング
         pygame.draw.aalines(self.surf, points=xys, closed=False, color=(0, 0, 0))
-
-        clearance = 10
-
-        # 車体が四角形の場合
-        # carwidth = 40
-        # carheight = 20
-        # l, r, t, b = -carwidth / 2, carwidth / 2, carheight, 0
-        # coords = []
-        # for c in [(l, b), (l, t), (r, t), (r, b)]:
-        #     c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
-        #     coords.append(
-        #         (
-        #             c[0] + (pos - self.min_position) * scale,
-        #             c[1] + clearance + self._height(pos) * scale,
-        #         )
-        #     )
-        # gfxdraw.aapolygon(self.surf, coords, (0, 0, 0))
-        # gfxdraw.filled_polygon(self.surf, coords, (0, 0, 0))
 
         # 車体が円の場合
         # 車体の幅と高さを同じ値に設定する（ここでは直径として考える）
-        self.carwidth = 40
-        self.carheight = 40
-
+        self.bodyRadius = 15
         gfxdraw.aacircle(self.surf,
-                        int((pos - self.min_position) * self.scale)+100, 
-                        int(-self.carwidth / 2 + clearance + self._height(pos) * scale),
-                        int(self.carheight / 2),
-                        (128, 128, 128))
-
-        # for c in [(self.carwidth / 4, 0), (-self.carwidth / 4, 0)]:
-        #     c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
-        #     wheel = (
-        #         int(c[0] + (pos - self.min_position) * scale),
-        #         int(c[1] + clearance + self._height(pos) * scale),
-        #     )
-
-        #     gfxdraw.aacircle(
-        #         self.surf, wheel[0], wheel[1], int(self.carheight / 2.5), (128, 128, 128)
-        #     )
-        #     gfxdraw.filled_circle(
-        #         self.surf, wheel[0], wheel[1], int(self.carheight / 2.5), (128, 128, 128)
-        #     )
+                        int((pos - self.min_position) * scale), 
+                        int(self.bodyRadius+5 + self._height(pos) * scale),
+                        int(self.bodyRadius),
+                        (255, 0, 0))
+        gfxdraw.filled_circle(self.surf,
+                        int((pos - self.min_position) * scale), 
+                        int(self.bodyRadius+5 + self._height(pos) * scale),
+                        int(self.bodyRadius),
+                        (255, 0, 0))
+        
+        # 尻尾書くよ
+        self.wheelRadius = 20
+        l, r, t, b = -self.wheelRadius+5, self.wheelRadius-5, 5, 0
+        coords = []
+        for c in [(l, b), (l, t), (r, t), (r, b)]:
+            c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos) + 0.8)
+            coords.append((c[0] + (pos - self.min_position) * scale - self.wheelRadius, c[1] + self.clearance + self._height(pos) * scale))
+        gfxdraw.aapolygon(self.surf, coords, (255, 0, 0))
+        gfxdraw.filled_polygon(self.surf, coords, (255, 0, 0))
+        
+        # 車輪書くよ
+        self.wheelRadius = 20
+        gfxdraw.aacircle(self.surf,
+                        int((pos - self.min_position) * scale), 
+                        int(self.wheelRadius + self._height(pos) * scale),
+                        int(self.wheelRadius),
+                        (0, 0, 0))
+        gfxdraw.filled_circle(self.surf,
+                        int((pos - self.min_position) * scale), 
+                        int(self.wheelRadius + self._height(pos) * scale),
+                        int(self.wheelRadius),
+                        (0, 0, 0))
 
         flagx = int((self.goal_position - self.min_position) * scale)
         flagy1 = int(self._height(self.goal_position) * scale)
