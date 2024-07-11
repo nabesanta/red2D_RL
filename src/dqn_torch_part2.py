@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
 import os
-import time
 import csv
 import copy
-import rospy
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 from PIL import Image
-from IPython import display
 from collections import deque
-# 強化学習関連
+# 強化学習環境
 import redenv
 import gym
-# 機械学習関連
-from chainer import serializers
-# torch
+# 機械学習関連torch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,26 +24,34 @@ HIDDEN_SIZE = 16
 
 print(torch.cuda.is_available())
 print(torch.cuda.device_count())
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+print(device)
 
 # Q Network Definition
 class Q(nn.Module):
-    def __init__(self, state_num=STATE_NUM, action=None):
+    def __init__(self, state_num=STATE_NUM, action=3):
         super(Q, self).__init__()
+        # state: 過去の状態量の数
+        # action: 行動の数
+        # → 各行動に対応したQ値を出力する
         self.l1 = nn.Linear(state_num, HIDDEN_SIZE)
         self.l2 = nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE)
         self.l3 = nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE)
         self.l4 = nn.Linear(HIDDEN_SIZE, action)
 
     def __call__(self, x, t):
-        return F.mse_loss(self.predict(x, train=True), t)
+        # mse_loss(予測値, 実際の値)
+        # 平均二乗損失を用いて, 予測値とターゲット値の差を計算する
+        return F.mse_loss(x, t)
 
-    def predict(self, x, train=False):
+    def predict(self, x):
         h1 = F.relu(self.l1(x))
         h2 = F.relu(self.l2(h1))
         h3 = F.relu(self.l3(h2))
         y = F.relu(self.l4(h3))
         return y
 
+# 経験メモリの格納場所
 class Memory:
     def __init__(self, max_size=1000):
         self.buffer = deque(maxlen=max_size)
@@ -64,8 +65,8 @@ class Memory:
 
     def len(self):
         return len(self.buffer)
-    
-# Memoryクラスを継承した、TD誤差を格納するクラス
+
+# TD誤差の格納場所
 class Memory_TDerror(Memory):
     def __init__(self, max_size=1000):
         super().__init__(max_size)
@@ -73,36 +74,41 @@ class Memory_TDerror(Memory):
 
 # Double DQN Agent Definition
 class DoubleDQNAgent():
-    def __init__(self, state_num=STATE_NUM, action=None, epsilon=1.00, alpha=0.6, beta=0.4, beta_increment_per_sampling=0.001):
-        self.main_model = Q(state_num, action)
-        self.target_model = Q(state_num, action)
+    def __init__(self, state_num=STATE_NUM, action=3, epsilon=0.99, alpha=0.6, beta=0.4, beta_increment_per_sampling=0.001):
+        self.main_model = Q(state_num, action).to(device) # 行動を学習するニューラルネット
+        self.target_model = Q(state_num, action).to(device) # 状態価値を学習するニューラルネット
+        # ニューラルネットのパラメータを最適化する手法
+        # lr: 学習率, α: 学習率を調整する係数, ε: ゼロ除算を防ぐもの
         self.optimizer = optim.RMSprop(self.main_model.parameters(), lr=0.01, alpha=0.99, eps=1e-08, weight_decay=0, momentum=0, centered=False)
-        self.epsilon = epsilon
-        self.actions = [0, 1, 2]
-        self.experienceMemory = []
-        self.experienceMemory_local = []
-        self.memSize = 1000 # 1000ステップ * 100エピソード
+        self.epsilon = epsilon # 探査率: ε-greedy法
+        self.actions = [0, 1, 2] # ロボットのアクション番号
+        self.experienceMemory = [] # ローカル経験メモリ
+        self.experienceMemory_local = [] # グローバル経験メモリ
+        self.memSize = 1000 # 1000ステップ * 10エピソード: 最初は多く探査するために多めに確保
         self.memPos = 0
         # 学習関連
-        self.batch_num = 32
-        self.gamma = 0.99
-        self.loss = 0
-        # self.total_rewards = np.ones(10) * -1e6
+        self.batch_num = 32 # 学習のバッチサイズ
+        self.gamma = 0.99 # 割引率
         self.total_rewards = np.ones(10) * -1e3
+        self.loss = 0
         # 経験に使用
         self.maxPosition = 0 
-        self.alpha = alpha
+        self.alpha = alpha 
         self.error = 0.01
         self.beta = beta
         self.beta_increment_per_sampling = beta_increment_per_sampling
-        self.update_target_freq = 1
+        self.update_target_freq = 1 # 1エピソードごとに二つのニューラルネットを一致させる
 
 # 行動の価値関数の獲得
     def get_action_value(self, seq):
-        x = tensor(np.hstack([seq]).astype(np.float32).reshape((1, -1)))
+        # 1次元の配列に変換
+        x = tensor(np.hstack([seq]).astype(np.float32).reshape((1, -1))).to(device)
+        # ニューラルネットで予測
         pact = self.main_model.predict(x)
+        # maxs: 最大値, indices: そのインデックス
         maxs, indices = torch.max(pact.data, 1)
-        pact = indices.numpy()[0]
+        # 最大値のインデックスを取り出す
+        pact = indices.cpu().numpy()[0]
         return pact
 
     def get_greedy_action(self, seq):
@@ -110,7 +116,14 @@ class DoubleDQNAgent():
         return self.actions[action_index]
 
     def reduce_epsilon(self, episode):
-        self.epsilon = 0.001 + 0.9 / (1.0 + episode)
+        # エピソード0: 0.901, エピソード10: 0.082, エピソード100: 0.001
+        # self.epsilon = 0.001 + 0.9 / (1.0 + episode)
+        # 1000エピソードで0.01になる減少関数
+        initial_epsilon = 0.99
+        final_epsilon = 0.01
+        decay_rate = (initial_epsilon - final_epsilon) / 100
+        # 更新する際に使用する
+        self.epsilon = max(final_epsilon, initial_epsilon - decay_rate * episode)
 
     def get_epsilon(self):
         return self.epsilon
@@ -136,10 +149,17 @@ class DoubleDQNAgent():
         # 優先度の獲得
         if (error==None):
             error = 0
+        # 投入するときの優先度はすべて同じ
         priority = (error + self.error) ** self.alpha
         self.experienceMemory.append((x, priority))
+        # # 満タンになったら先頭から順番に消していく
+        # if len(self.experienceMemory) > self.memSize:
+        #     self.experienceMemory.pop(0)
+        # 優先度の低いものから削除する
         if len(self.experienceMemory) > self.memSize:
-            self.experienceMemory.pop(0)
+            # 優先度が最も低いものを見つけて削除する
+            min_priority_idx = min(range(len(self.experienceMemory)), key=lambda idx: self.experienceMemory[idx][1])
+            self.experienceMemory.pop(min_priority_idx)
 
     def sample(self):
         # すべての経験についている優先度のみを抽出
@@ -160,7 +180,7 @@ class DoubleDQNAgent():
         # エラーがからの場合はリターン
         if len(errors) == 0 or len(indices) == 0:
             return
-        
+        # 優先度の更新
         for i, idx in enumerate(indices):
             if i < len(errors):
                 priority = min(abs(errors[i]) + self.beta_increment_per_sampling, self.error)
@@ -168,13 +188,13 @@ class DoubleDQNAgent():
 
     def get_TDerror(self, state, action, reward, next_state):
         # 価値計算（DDQNにも対応できるように、行動決定のQネットワークと価値観数のQネットワークは分離）
-        x = tensor(np.hstack([next_state]).astype(np.float32).reshape((1, -1)))
+        x = tensor(np.hstack([next_state]).astype(np.float32).reshape((1, -1))).to(device)
         pact = self.main_model.predict(x)
         maxs, indices = torch.max(pact.data, 1)
         pact = indices.numpy()[0]
         next_action = self.actions[pact]
         target = reward + self.gamma * self.target_model.predict(x)[pact]
-        old_x = tensor(np.hstack([state]).astype(np.float32).reshape((1, -1)))
+        old_x = tensor(np.hstack([state]).astype(np.float32).reshape((1, -1))).to(device)
         # TD誤差の計算
         TDerror = target - self.target_model.predict(old_x)[action]
         return TDerror
@@ -194,7 +214,6 @@ class DoubleDQNAgent():
         sum_absolute_TDerror = 0
         for i in range(0, (self.len() - 1)):
             sum_absolute_TDerror += abs(self.buffer[i]) + 0.0001  # 最新の状態データを取り出す
-
         return sum_absolute_TDerror
 
     def update_model(self, num):
@@ -205,35 +224,39 @@ class DoubleDQNAgent():
         batch, indices = self.sample()
         # batchの中から、経験のみを抜き出す
         batch = np.array([e for (e, p) in batch])
-        # 経験のすべての行に対して状態行列を取り出し、バッチサイズの次元に変換する
-        x = tensor(batch[:, 0:STATE_NUM].reshape((self.batch_num, -1)).astype(np.float32))
+        # 経験のすべての行に対して一個前の状態行列を取り出し、バッチサイズの次元に変換する
+        x = tensor(batch[:, 0:STATE_NUM].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
+        new_x = tensor(batch[:, STATE_NUM+2:2*STATE_NUM+2].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
         # 学習じゃないから、逆伝搬を防ぐ
-        with torch.no_grad():
-            # NNから最適な行動を選択
-            pact = self.main_model.predict(x)
-            maxs, indices = torch.max(pact.data, 1)
-            pact = indices.numpy()[0]
-            next_actions = self.actions[pact]
-            # NNから次の状態のQ値を取得する
-            next_q_values = self.target_model.predict(x).data.numpy()
-            # 現在のモデルのQ値を計算する
-            targets = self.main_model.predict(x).clone().data.numpy()
-            for i in range(self.batch_num):
-                # 0~STATE_NUM-1に状態が入っているから
-                # STATE_NUMは行動
-                a = batch[i, STATE_NUM]
-                # STATE_NUM+1が報酬
-                r = batch[i, STATE_NUM + 1]
-                ai = int((a + 1) / 2)
-                new_seq = batch[i, (STATE_NUM + 2):(STATE_NUM * 2 + 2)]
-                # 上で取得したnext_actionsを用いて, 別のNNで獲得したnext_q_valuesを計算
-                targets[i, ai] = r + self.gamma * next_q_values[i, indices[i]]
+        # NNから最適な行動を選択
+        pact_array = self.main_model.predict(x)
+        maxs, indices = torch.max(pact_array.data, 1)
+        pact = indices.cpu().numpy()[0]
+        indices_cpu = indices.cpu()
+        next_actions = self.actions[pact]
+        # NNから次の状態のQ値を取得する
+        next_q_values = self.target_model.predict(new_x).cpu().data.numpy()
+        # 現在のモデルのQ値を計算する
+        targets = self.main_model.predict(x).clone().cpu().data.numpy()
+        for i in range(self.batch_num):
+            # 0~STATE_NUM-1に状態が入っているから
+            # STATE_NUMは行動
+            a = batch[i, STATE_NUM]
+            # STATE_NUM+1が報酬
+            r = batch[i, STATE_NUM + 1]
+            # 終了判定
+            bool_dones = batch[i, 2*STATE_NUM+2]
+            ai = int((a + 1) / 2)
+            new_seq = batch[i, (STATE_NUM + 2):(STATE_NUM * 2 + 2)]
+            # 上で取得したnext_actionsを用いて, 別のNNで獲得したnext_q_valuesを計算
+            targets[i, ai] = r + self.gamma * next_q_values[i, indices_cpu.numpy()[i]]*(not bool_dones)
         # 先ほど計算したtarget値を変換
-        t = tensor(np.array(targets).reshape((self.batch_num, -1)).astype(np.float32))
+        t = tensor(np.array(targets).reshape((self.batch_num, -1)).astype(np.float32)).to(device)
         # 勾配をクリアにする
         self.optimizer.zero_grad()
         # lossの計算をする
-        loss = self.main_model(x, t)
+        # loss = nn.MSELoss()(pact_array, t)
+        loss = nn.MSELoss()(pact_array, t)
         loss.backward()
         self.optimizer.step()
 
@@ -316,15 +339,13 @@ class Simulator:
             new_seq = self.seq.copy()
             # ローカルに経験メモリに蓄積
             self.agent.experience_local(old_seq, action, reward, new_seq, done)
-            # TD誤差を計算する
-            # TDerror = self.agent.get_TDerror(old_seq, action, reward, new_seq)
-            # self.TDmemory.add(TDerror)
             if enable_log:
                 self.log.append(np.hstack([old_seq[0], action, reward]))
             if movie:
                 img = self.env.render()
                 frames.append(Image.fromarray(img))
             step += 1
+            print(step)
             if train:
                 self.agent.update_model(num)
                 self.agent.reduce_epsilon(num)

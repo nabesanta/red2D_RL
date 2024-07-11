@@ -11,6 +11,7 @@ import torch.optim as optim
 from torch.autograd import Variable
 import gym
 from gym import wrappers
+
 # 環境
 MONITOR = False
 env = gym.make("CartPole-v0")
@@ -24,7 +25,6 @@ HIDDEN_SIZE = 100
 class NN(nn.Module):
     
     def __init__(self):
-        
         super(NN, self).__init__()
         self.fc1 = nn.Linear(obs_num, HIDDEN_SIZE)
         self.fc2 = nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE)
@@ -32,7 +32,6 @@ class NN(nn.Module):
         self.fc4 = nn.Linear(HIDDEN_SIZE, acts_num)
     
     def __call__(self, x):
-        
         h = F.relu(self.fc1(x))
         h = F.relu(self.fc2(h))
         h = F.relu(self.fc3(h))
