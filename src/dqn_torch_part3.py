@@ -20,6 +20,9 @@ from torch import tensor
 from cpprb import PrioritizedReplayBuffer
 # https://zenn.dev/team411/articles/9f1db350845e98
 # https://qiita.com/keisuke-nakata/items/67fc9aa18227faf621a5
+# https://arxiv.org/pdf/1511.05952
+# https://horomary.hatenablog.com/entry/2021/02/06/013412#%E5%AE%9F%E8%A3%85%E4%BE%8B
+# https://zenn.dev/ymd_h/articles/03edcaa47a3b1c
 
 # GPUの使用可否
 print(torch.cuda.is_available())
@@ -40,10 +43,16 @@ class Q(nn.Module):
         # state: 過去の状態量の数
         # action: 行動の数
         # → 各行動に対応したQ値を出力する
-        self.l1 = nn.Linear(state_num, HIDDEN_SIZE)
-        self.l2 = nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE)
-        self.l3 = nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE)
-        self.l4 = nn.Linear(HIDDEN_SIZE, action)
+        self.l1 = nn.Linear(state_num, 16)
+        self.l2 = nn.Linear(16, 16)
+        self.l3 = nn.Linear(16, 16)
+        self.l4 = nn.Linear(16, action)
+        
+        # Initialize weights
+        nn.init.kaiming_normal_(self.l1.weight, nonlinearity='relu')
+        nn.init.kaiming_normal_(self.l2.weight, nonlinearity='relu')
+        nn.init.kaiming_normal_(self.l3.weight, nonlinearity='relu')
+        nn.init.kaiming_normal_(self.l4.weight, nonlinearity='linear')
 
     def __call__(self, x, t):
         # mse_loss(予測値, 実際の値)
@@ -54,7 +63,7 @@ class Q(nn.Module):
         h1 = F.relu(self.l1(x))
         h2 = F.relu(self.l2(h1))
         h3 = F.relu(self.l3(h2))
-        y = F.relu(self.l4(h3))
+        y = self.l4(h3)  # Remove ReLU from the output layer
         return y
 
 # Double DQN Agent Definition
@@ -182,7 +191,7 @@ class DoubleDQNAgent():
             indices_sample = self.rb.sample(self.batch_num, beta = self.beta)["indexes"]
             weights = self.rb.sample(self.batch_num, beta = self.beta)["weights"]
             # 経験のすべての行に対して一個前の状態行列を取り出し、バッチサイズの次元に変換する
-            x = tensor(batch[:, 0:STATE_NUM].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
+            x = tensor(batch[:, 0:STATE_NUM].reshape((self.batch_num, -1)).astype(np.float32), requires_grad=True).to(device)
             new_x = tensor(batch[:, STATE_NUM+2:2*STATE_NUM+2].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
             # 1, メインネットワークからQ値を取得
             pact_array = self.main_model.predict(x)
@@ -210,9 +219,10 @@ class DoubleDQNAgent():
             # 勾配をクリアにする
             self.optimizer.zero_grad()
             # lossの計算をする
-            td_loss = nn.MSELoss()(pact_array, t)
+            td_loss = nn.MSELoss(reduction='none')(pact_array, t)
             # TD誤差に重みを適用（weightsはnumpy.ndarrayであると仮定）
             weights_tensor = torch.tensor(weights, dtype=torch.float32)
+            weights_tensor = weights_tensor.unsqueeze(1)
             loss = torch.mean(weights_tensor * td_loss.cpu())
             # TD誤差に重みづけ
             loss.backward()
@@ -220,8 +230,8 @@ class DoubleDQNAgent():
 
             # 経験の優先度付けをするため、エラーの計算をする
             # errors = self.get_TDerror(x, batch[:, STATE_NUM], batch[:, STATE_NUM + 1], new_x, batch)
-            errors = td_loss.detach().cpu().numpy().flatten()
-            print(errors)
+            # 経験の優先度付けをするため、エラーの計算をする
+            errors = td_loss.mean(dim=1).detach().cpu().numpy().flatten()
             # 優先度の更新
             self.rb.update_priorities(indices_sample,errors)
             # Q値の更新

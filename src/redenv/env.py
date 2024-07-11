@@ -101,7 +101,7 @@ class RedmountainEnv(gym.Env):
         terminated = bool(position >= self.goal_position and velocity >= self.goal_velocity)
         # 毎ステップ-1.0
         self.count += 1
-        reward = -1 * self.count
+        reward = -1
         # 状態は（位置、速度）
         self.state = (position, velocity)
         if self.render_mode == "human":
