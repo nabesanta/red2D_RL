@@ -38,6 +38,10 @@ class RedmountainEnv(gym.Env):
         self.goal_position = 0.5
         # ゴールでの速度は0
         self.goal_velocity = goal_velocity
+        # 初期位置
+        self.inition_state = 0
+        # count
+        self.count = 0
 
         # 車に作用する力
         self.force = 0.001
@@ -96,7 +100,8 @@ class RedmountainEnv(gym.Env):
         # 終了判定は、ゴールの位置にたどり着き速度が0以上
         terminated = bool(position >= self.goal_position and velocity >= self.goal_velocity)
         # 毎ステップ-1.0
-        reward = -1.0
+        self.count += 1
+        reward = -1 * self.count
         # 状態は（位置、速度）
         self.state = (position, velocity)
         if self.render_mode == "human":
@@ -116,6 +121,8 @@ class RedmountainEnv(gym.Env):
         low, high = utils.maybe_parse_reset_bounds(options, -0.6, -0.4)
         # 速度は0
         self.state = np.array([self.np_random.uniform(low=low, high=high), 0])
+        self.inition_state = self.state
+        self.count += 1
 
         if self.render_mode == "human":
             self.render()

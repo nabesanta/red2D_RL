@@ -8,12 +8,24 @@ from collections import deque
 # 強化学習環境
 import redenv
 import gym
+# tensorflow
+import tensorflow as tf
 # 機械学習関連torch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch import tensor
+# 優先度付き経験再生
+from cpprb import PrioritizedReplayBuffer
+# https://zenn.dev/team411/articles/9f1db350845e98
+# https://qiita.com/keisuke-nakata/items/67fc9aa18227faf621a5
+
+# GPUの使用可否
+print(torch.cuda.is_available())
+print(torch.cuda.device_count())
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+print(device)
 
 # 各種設定
 np.random.seed(0)
@@ -21,12 +33,6 @@ np.random.seed(0)
 STATE_NUM = 10
 # 隠れ層の数
 HIDDEN_SIZE = 16
-
-print(torch.cuda.is_available())
-print(torch.cuda.device_count())
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-print(device)
-
 # Q Network Definition
 class Q(nn.Module):
     def __init__(self, state_num=STATE_NUM, action=3):
@@ -51,30 +57,9 @@ class Q(nn.Module):
         y = F.relu(self.l4(h3))
         return y
 
-# 経験メモリの格納場所
-class Memory:
-    def __init__(self, max_size=1000):
-        self.buffer = deque(maxlen=max_size)
-
-    def add(self, experience):
-        self.buffer.append(experience)
-
-    def sample(self, batch_size):
-        idx = np.random.choice(np.arange(len(self.buffer)), size=batch_size, replace=False)
-        return [self.buffer[ii] for ii in idx]
-
-    def len(self):
-        return len(self.buffer)
-
-# TD誤差の格納場所
-class Memory_TDerror(Memory):
-    def __init__(self, max_size=1000):
-        super().__init__(max_size)
-    # add, sample, len は継承されているので定義不要
-
 # Double DQN Agent Definition
 class DoubleDQNAgent():
-    def __init__(self, state_num=STATE_NUM, action=3, epsilon=0.99, alpha=0.6, beta=0.4, beta_increment_per_sampling=0.001):
+    def __init__(self, state_num=STATE_NUM, action=3, epsilon=0.99, alpha=0.4, beta=0.4, beta_increment_per_sampling=0.001):
         self.main_model = Q(state_num, action).to(device) # 行動を学習するニューラルネット
         self.target_model = Q(state_num, action).to(device) # 状態価値を学習するニューラルネット
         # ニューラルネットのパラメータを最適化する手法
@@ -84,7 +69,8 @@ class DoubleDQNAgent():
         self.actions = [0, 1, 2] # ロボットのアクション番号
         self.experienceMemory = [] # ローカル経験メモリ
         self.experienceMemory_local = [] # グローバル経験メモリ
-        self.memSize = 1000 # 1000ステップ * 10エピソード: 最初は多く探査するために多めに確保
+        self.memSize = 1000 * 10# 1000ステップ * 10エピソード: 最初は多く探査するために多めに確保
+        self.update_target_frequency = 999
         self.memPos = 0
         # 学習関連
         self.batch_num = 32 # 学習のバッチサイズ
@@ -92,6 +78,11 @@ class DoubleDQNAgent():
         self.total_rewards = np.ones(10) * -1e3
         self.loss = 0
         # 経験に使用
+        self.act_dim = 1
+        self.replay_flag = 0
+        self.rb = PrioritizedReplayBuffer(self.memSize,
+                                env_dict ={"state": {"shape": 23}},
+                                alpha = 0.4)
         self.maxPosition = 0 
         self.alpha = alpha 
         self.error = 0.01
@@ -138,68 +129,31 @@ class DoubleDQNAgent():
             action = self.get_greedy_action(np.array(seq))
         return action
 
-# 経験の価値関数の獲得
-    def experience_local(self, old_seq, action, reward, new_seq, done):
-        self.experienceMemory_local.append(np.hstack([old_seq, action, reward, new_seq, done]))
-        for x in self.experienceMemory_local:
-            self.experience(x, error=None)
-
-    # 経験をグローバル経験メモリに追加する
-    def experience(self, x, error=None):
-        # 優先度の獲得
-        if (error==None):
-            error = 0
-        # 投入するときの優先度はすべて同じ
-        priority = (error + self.error) ** self.alpha
-        self.experienceMemory.append((x, priority))
-        # # 満タンになったら先頭から順番に消していく
-        # if len(self.experienceMemory) > self.memSize:
-        #     self.experienceMemory.pop(0)
-        # 優先度の低いものから削除する
-        if len(self.experienceMemory) > self.memSize:
-            # 優先度が最も低いものを見つけて削除する
-            min_priority_idx = min(range(len(self.experienceMemory)), key=lambda idx: self.experienceMemory[idx][1])
-            self.experienceMemory.pop(min_priority_idx)
-
-    def sample(self):
-        # すべての経験についている優先度のみを抽出
-        priorities = np.array([p for (e, p) in self.experienceMemory])
-        # 各経験の優先度を、全体の優先度の合計で割る＝優先度が高いものほど大きい値
-        prob_sum = priorities.sum()
-        prob = priorities / prob_sum
-        # 32個数分の経験を抽出する
-        indices = np.random.choice(len(self.experienceMemory), size=self.batch_num, p=prob)
-        # 対応するインデックスの経験をbatchで格納
-        batch = [self.experienceMemory[idx] for idx in indices]
-        # バッチと番号を変換
-        return batch, indices
-
-    def update_priorities(self, indices, errors):
-        # エラーがリストでなかった場合、リストに変換
-        if not isinstance(errors, list):
-            errors = [errors]  # Ensure errors is a list
-        # エラーがからの場合はリターン
-        if len(errors) == 0 or len(indices) == 0:
-            return
-        # 優先度の更新
-        # errorが大きいものほど優先的に取り出す
-        for i, idx in enumerate(indices):
-            if i < len(errors):
-                priority = min(abs(errors[i]) + self.beta_increment_per_sampling, self.error)
-                self.experienceMemory[idx] = (self.experienceMemory[idx][0], priority)
-
-    def get_TDerror(self, state, action, reward, next_state):
-        # 価値計算（DDQNにも対応できるように、行動決定のQネットワークと価値観数のQネットワークは分離）
-        x = tensor(np.hstack([next_state]).astype(np.float32).reshape((1, -1))).to(device)
-        pact = self.main_model.predict(x)
+    def get_TDerror(self, state, action, reward, next_state, batch):
+        # main_modelでnext_stateのQ値を予測
+        pact = self.main_model.predict(next_state)
         maxs, indices = torch.max(pact.data, 1)
-        pact = indices.numpy()[0]
-        next_action = self.actions[pact]
-        target = reward + self.gamma * self.target_model.predict(x)[pact]
-        old_x = tensor(np.hstack([state]).astype(np.float32).reshape((1, -1))).to(device)
-        # TD誤差の計算
-        TDerror = target - self.target_model.predict(old_x)[action]
-        return TDerror
+        indices_cpu = indices.cpu().numpy()
+        # target_modelでnext_stateのQ値を予測
+        next_q_values = self.target_model.predict(next_state).cpu().data.numpy()
+        # main_modelでnext_stateのQ値を予測ものをコピー
+        targets = self.main_model.predict(next_state).clone().cpu().data.numpy()
+        for i in range(self.batch_num):
+            # バッチから状態、行動、報酬、終了判定を取り出す
+            a = batch[i, STATE_NUM]
+            r = batch[i, STATE_NUM + 1]
+            bool_dones = batch[i, 2 * STATE_NUM + 2]
+            # 終了状態でなければ次状態のQ値を考慮
+            if not bool(bool_dones):
+                index = int(indices_cpu[i])
+                targets[i, int(a)] = r + self.gamma * next_q_values[i, index]
+            else:
+                targets[i, int(a)] = r  # 終了状態の場合、次状態のQ値は考慮しない
+        # 現在の状態のQ値を取得
+        current_q_values = self.target_model.predict(state).cpu().data.numpy()
+        TDerror = targets[np.arange(self.batch_num), action.astype(int)] - current_q_values[np.arange(self.batch_num), action.astype(int)]
+        print("TDerror:", TDerror)
+        return np.abs(TDerror)
 
     # TD誤差をすべて更新
     def update_TDerror(self, memory, gamma, mainQN, targetQN):
@@ -218,82 +172,80 @@ class DoubleDQNAgent():
             sum_absolute_TDerror += abs(self.buffer[i]) + 0.0001  # 最新の状態データを取り出す
         return sum_absolute_TDerror
 
-    def update_model(self, num):
-        if len(self.experienceMemory) < self.batch_num:
-            print("Not enough experiences")
-            return
-        # 抽出されたバッチとインデックス
-        batch, indices = self.sample()
-        # batchの中から、経験のみを抜き出す
-        batch = np.array([e for (e, p) in batch])
-        # 経験のすべての行に対して一個前の状態行列を取り出し、バッチサイズの次元に変換する
-        x = tensor(batch[:, 0:STATE_NUM].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
-        new_x = tensor(batch[:, STATE_NUM+2:2*STATE_NUM+2].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
-        # 学習じゃないから、逆伝搬を防ぐ
-        # NNから最適な行動を選択
-        pact_array = self.main_model.predict(x)
-        maxs, indices = torch.max(pact_array.data, 1)
-        pact = indices.cpu().numpy()[0]
-        indices_cpu = indices.cpu()
-        next_actions = self.actions[pact]
-        # NNから次の状態のQ値を取得する
-        next_q_values = self.target_model.predict(new_x).cpu().data.numpy()
-        # 現在のモデルのQ値を計算する
-        targets = self.main_model.predict(x).clone().cpu().data.numpy()
-        for i in range(self.batch_num):
-            # 0~STATE_NUM-1に状態が入っているから
-            # STATE_NUMは行動
-            a = batch[i, STATE_NUM]
-            # STATE_NUM+1が報酬
-            r = batch[i, STATE_NUM + 1]
-            # 終了判定
-            bool_dones = batch[i, 2*STATE_NUM+2]
-            ai = int((a + 1) / 2)
-            new_seq = batch[i, (STATE_NUM + 2):(STATE_NUM * 2 + 2)]
-            # 上で取得したnext_actionsを用いて, 別のNNで獲得したnext_q_valuesを計算
-            targets[i, ai] = r + self.gamma * next_q_values[i, indices_cpu.numpy()[i]]*(not bool_dones)
-        # 先ほど計算したtarget値を変換
-        t = tensor(np.array(targets).reshape((self.batch_num, -1)).astype(np.float32)).to(device)
-        # 勾配をクリアにする
-        self.optimizer.zero_grad()
-        # lossの計算をする
-        # loss = nn.MSELoss()(pact_array, t)
-        loss = nn.MSELoss()(pact_array, t)
-        loss.backward()
-        self.optimizer.step()
+    def update_model(self, num, step):
+        # 何個経験が貯まったら学習を始めるか
+        if num==0 and step ==999:
+            self.replay_flag = 1
+        if num!=0 and self.replay_flag == 1:
+            # 抽出されたバッチとインデックス
+            batch = self.rb.sample(self.batch_num, beta = self.beta)["state"]
+            indices_sample = self.rb.sample(self.batch_num, beta = self.beta)["indexes"]
+            weights = self.rb.sample(self.batch_num, beta = self.beta)["weights"]
+            # 経験のすべての行に対して一個前の状態行列を取り出し、バッチサイズの次元に変換する
+            x = tensor(batch[:, 0:STATE_NUM].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
+            new_x = tensor(batch[:, STATE_NUM+2:2*STATE_NUM+2].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
+            # 1, メインネットワークからQ値を取得
+            pact_array = self.main_model.predict(x)
+            # 2, メインネットワークに次状態を入力して、目標値(target)の計算で利用するの行動を取得 
+            pact_array_next = self.main_model.predict(new_x)
+            maxs, indices_next = torch.max(pact_array_next.data, 1)
+            indices_cpu = indices_next.cpu()
+            # 3, ターゲットネットワークに次状態を入力して、目標値(target)の計算で利用するQ値を取得
+            next_q_values = self.target_model.predict(new_x).cpu().data.numpy()
+            # 4, メインネットワークからQ値をコピーし、
+            targets = self.main_model.predict(x).clone().cpu().data.numpy()
+            for i in range(self.batch_num):
+                # 0~STATE_NUM-1に状態が入っているから
+                # STATE_NUMは行動
+                a = batch[i, STATE_NUM]
+                # STATE_NUM+1が報酬
+                r = batch[i, STATE_NUM + 1]
+                # 終了判定
+                bool_dones = batch[i, 2*STATE_NUM+2]
+                new_seq = batch[i, (STATE_NUM + 2):(STATE_NUM * 2 + 2)]
+                # 上で取得したnext_actionsを用いて, 別のNNで獲得したnext_q_valuesを計算
+                targets[i, int(a):int(a+1)] = r + self.gamma * next_q_values[i, int(indices_cpu.numpy()[i]):int(indices_cpu.numpy()[i]+1)]
+            # 先ほど計算したtarget値を変換
+            t = tensor(np.array(targets).reshape((self.batch_num, -1)).astype(np.float32)).to(device)
+            # 勾配をクリアにする
+            self.optimizer.zero_grad()
+            # lossの計算をする
+            td_loss = nn.MSELoss()(pact_array, t)
+            # TD誤差に重みを適用（weightsはnumpy.ndarrayであると仮定）
+            weights_tensor = torch.tensor(weights, dtype=torch.float32)
+            loss = torch.mean(weights_tensor * td_loss.cpu())
+            # TD誤差に重みづけ
+            loss.backward()
+            self.optimizer.step()
 
-        # 経験の優先度付けをするため、エラーの計算をする
-        errors = F.mse_loss(self.main_model.predict(x), t).data
-        if errors is None:
-            errors = []
+            # 経験の優先度付けをするため、エラーの計算をする
+            # errors = self.get_TDerror(x, batch[:, STATE_NUM], batch[:, STATE_NUM + 1], new_x, batch)
+            errors = td_loss.detach().cpu().numpy().flatten()
+            print(errors)
+            # 優先度の更新
+            self.rb.update_priorities(indices_sample,errors)
+            # Q値の更新
+            if step % self.update_target_frequency == 0:
+                print("update")
+                self.target_model = copy.deepcopy(self.main_model)
         else:
-            errors = errors.tolist()
-        # 優先度の更新を行う
-        self.update_priorities(indices, errors)
-        # Q値の更新
-        if self.memPos != num:
-            print("check")
-            self.target_model = copy.deepcopy(self.main_model)
-            self.memPos = num
+            return
 
 # Simulator（変更なし）
 class Simulator:
-    def __init__(self, environment, agent, TDmemory):
+    def __init__(self, environment, agent):
         # DDQN agent
         self.agent = agent
-        # TD memory
-        self.TDmemory = TDmemory
+        # 2D RED mountain 
+        self.env = environment
         # 最高ステップ数
         self.maxStep = 1000
         # レンダリング
-        self.Monitor = True
-        # 2D RED mountain 
-        self.env = environment
+        self.Monitor = False
         # 過去5ステップ
         self.num_seq = STATE_NUM
+        # 状態履歴配列の初期化
         self.reset_seq()
-        self.learning_rate = 1.0 
-        self.highscore = 0 
         self.log = []
 
     def reset_seq(self):
@@ -326,6 +278,7 @@ class Simulator:
             # 行動により観測値と報酬、エピソード終了判定を行う
             observation, reward, done, _, _ = self.env.step(action)
             current_position = observation[0]
+            current_velocity = observation[1]
             # 移動量の計算
             diff_distance = abs(current_position - init_position[0])
             if (max_diff < diff_distance):
@@ -333,24 +286,31 @@ class Simulator:
                 max_position = current_position
             # 報酬の加算
             total_reward += reward
-            # observation = [position, velocity]
+            # observation: [position, velocity]
             state = observation
-            # 今回の観測値を状態行列に追加する
+            # 今回の観測値(位置)を状態行列に追加する
             self.push_seq(state[0])
             # 新しい状態行列を作成
             new_seq = self.seq.copy()
-            # ローカルに経験メモリに蓄積
-            self.agent.experience_local(old_seq, action, reward, new_seq, done)
+            # 状態配列作成
+            state_seq = np.hstack([old_seq, action, reward, new_seq, done])
+            # 経験メモリに追加
+            self.agent.rb.add(state=state_seq)
+            # 学習するなら、モデルの更新を行う
+            if train:
+                # モデルの更新
+                self.agent.update_model(num,step)
+                # 1エピソードごとに減少させていく
+                self.agent.reduce_epsilon(num)
             if enable_log:
                 self.log.append(np.hstack([old_seq[0], action, reward]))
+            if done:
+                self.rb.on_episode_end()
             if movie:
                 img = self.env.render()
                 frames.append(Image.fromarray(img))
             step += 1
             print(step)
-            if train:
-                self.agent.update_model(num)
-                self.agent.reduce_epsilon(num)
         if movie:
             # GIFアニメーションの作成
             frames[0].save('output'+str(num)+'.gif', save_all=True, append_images=frames[1:], duration=40, loop=0)
@@ -365,8 +325,7 @@ if __name__ == '__main__':
     print("observation space num: ", env.observation_space.shape[0])
     print("action space num: ", env.action_space.n)
     agent = DoubleDQNAgent(action=acts_num)
-    memory_TDerror = Memory_TDerror(max_size=1000)
-    sim = Simulator(env, agent, memory_TDerror)
+    sim = Simulator(env, agent)
     model_dir = '/home/nabesanta/red2D_RL/src/model/'
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
@@ -380,15 +339,3 @@ if __name__ == '__main__':
             with open('/home/nabesanta/csv/redMountain/reward.csv', 'a') as f:
                 writer = csv.writer(f)
                 writer.writerow([total_reward, max_position])
-            if i % 10 == 0:
-                total_reward, max_position = sim.run(train=False, movie=True, num=i)
-                if test_highscore < total_reward:
-                    print("highscore!")
-                    test_highscore = total_reward
-                print(i, total_reward, "epsilon:{:.2e}".format(agent.get_epsilon()), "loss:{:.2e}".format(agent.loss))
-                aw = agent.total_rewards
-                print("min:{},max:{}".format(np.min(aw), np.max(aw)))
-
-                out = "{},{},{:.2e},{:.2e},{},{},{}\n".format(i, total_reward, agent.get_epsilon(), agent.loss, np.min(aw), np.max(aw), max_position)
-                fw.write(out)
-                fw.flush()
