@@ -102,7 +102,7 @@ class RedmountainEnv(gym.Env):
         if terminated:
             reward = 1
         else:
-            reward = 0
+            reward = -1
         # 毎ステップ-1.0
         self.count += 1
         # 状態は（位置、速度）

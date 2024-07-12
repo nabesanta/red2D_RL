@@ -16,6 +16,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch import tensor
+from collections import deque
+import random
 # 優先度付き経験再生
 from cpprb import PrioritizedReplayBuffer
 # https://zenn.dev/team411/articles/9f1db350845e98
@@ -32,10 +34,12 @@ print(device)
 
 # 各種設定
 np.random.seed(0)
+# 損失関数
+SL = torch.nn.SmoothL1Loss
 # 過去何ステップ分の状態量を使うか
 STATE_NUM = 10
 # 隠れ層の数
-HIDDEN_SIZE = 32
+HIDDEN_SIZE = 100
 # Q Network Definition
 class Q(nn.Module):
     def __init__(self, state_num=STATE_NUM, action=3, hidden_size=HIDDEN_SIZE):
@@ -55,9 +59,7 @@ class Q(nn.Module):
         nn.init.kaiming_normal_(self.l4.weight, nonlinearity='linear')
 
     def __call__(self, x, t):
-        # mse_loss(予測値, 実際の値)
-        # 平均二乗損失を用いて, 予測値とターゲット値の差を計算する
-        return F.mse_loss(x, t)
+        return SL(x, t)
 
     def predict(self, x):
         h1 = F.relu(self.l1(x))
@@ -65,6 +67,20 @@ class Q(nn.Module):
         h3 = F.relu(self.l3(h2))
         y = self.l4(h3)  # Remove ReLU from the output layer
         return y
+
+class Memory:
+    def __init__(self, max_size=1000):
+        self.buffer = deque(maxlen=max_size)
+
+    def add(self, experience):
+        self.buffer.append(experience)
+
+    def sample(self, batch_size):
+        idx = np.random.choice(np.arange(len(self.buffer)), size=batch_size, replace=False)
+        return [self.buffer[ii] for ii in idx], idx
+
+    def len(self):
+        return len(self.buffer)
 
 # Double DQN Agent Definition
 class DoubleDQNAgent():
@@ -173,16 +189,15 @@ class DoubleDQNAgent():
         return sum_absolute_TDerror
 
     # モデルの更新と経験の更新
-    def update_model(self, num, step, done):
+    def update_model(self, num, step, done, memory):
         # 何個経験が貯まったら学習を始めるか
-        if num==0 and step ==999:
+        if num==9 and step ==999:
             self.replay_flag = 1
         # 学習開始
         if num!=0 and self.replay_flag == 1:
             # 抽出されたバッチとインデックス、重み
-            batch = self.rb.sample(self.batch_num, beta = self.beta)["state"]
-            indices_sample = self.rb.sample(self.batch_num, beta = self.beta)["indexes"]
-            weights = self.rb.sample(self.batch_num, beta = self.beta)["weights"]
+            batch, indices_sample = memory.sample(self.batch_num)
+            batch = np.array(batch)  # リストからnumpy配列に変換
             # 経験のすべての行に対して一個前の状態行列を取り出し、バッチサイズの次元に変換する
             x = tensor(batch[:, 0:STATE_NUM].reshape((self.batch_num, -1)).astype(np.float32), requires_grad=True).to(device)
             new_x = tensor(batch[:, STATE_NUM+2:2*STATE_NUM+2].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
@@ -212,22 +227,13 @@ class DoubleDQNAgent():
             # 勾配をクリアにする
             self.optimizer.zero_grad()
             # lossの計算をする
-            td_loss = nn.MSELoss(reduction='none')(model_array, target)
-            # TD誤差に重みを適用（weightsはnumpy.ndarrayであると仮定）
-            weights_tensor = torch.tensor(weights, dtype=torch.float32)
-            weights_tensor = weights_tensor.unsqueeze(1)
-            loss = torch.mean(weights_tensor * td_loss.cpu())
+            loss = SL()(model_array, target)
             # TD誤差に重みづけ
             loss.backward()
             self.optimizer.step()
-
-            # 経験の優先度付けをするため、エラーの計算をする
-            # errors = self.get_TDerror(x, batch[:, STATE_NUM], batch[:, STATE_NUM + 1], new_x, batch)
-            # バッチサイズ分の経験に優先度付けをするため、各経験のエラーを計算する
-            errors = td_loss.mean(dim=1).detach().cpu().numpy().flatten()
-            # 優先度の更新
-            self.rb.update_priorities(indices_sample,errors)
             # Q値の更新
+            if (loss.item() == 0.0):
+                return False
             if (step != 0 and step % self.update_target_frequency == 0) or (step != 0 and done == True):
                 print("update")
                 print(f'Loss: {loss.item()}')
@@ -236,8 +242,9 @@ class DoubleDQNAgent():
                     writer = csv.writer(f)
                     writer.writerow([loss.item()])
                 self.target_model = copy.deepcopy(self.main_model)
+            return True
         else:
-            return
+            return True
 
 # Simulator（変更なし）
 class Simulator:
@@ -255,6 +262,9 @@ class Simulator:
         # 状態履歴配列の初期化
         self.reset_seq()
         self.log = []
+        # 経験メモリ
+        self.memSize = 1000 * 1000
+        self.memory = Memory(self.memSize)
 
     def reset_seq(self):
         self.seq = np.zeros(self.num_seq) 
@@ -311,13 +321,14 @@ class Simulator:
             # 状態配列作成
             state_seq = np.hstack([old_seq, action, reward, new_seq, done])
             # 経験メモリに追加
-            self.agent.rb.add(state=state_seq)
+            self.memory.add(state_seq)  # メモリの更新する
             # 学習するなら、モデルの更新を行う
             if train:
                 # モデルの更新
-                self.agent.update_model(num, step, done)
+                train_done = self.agent.update_model(num, step, done, self.memory)
                 # 1エピソードごとに減少させていく
                 self.agent.reduce_epsilon(num)
+                train = train_done
             if enable_log:
                 self.log.append(np.hstack([old_seq[0], action, reward]))
             if movie:

@@ -104,7 +104,7 @@ class Memory:
 
     def sample(self, batch_size):
         idx = np.random.choice(np.arange(len(self.buffer)), size=batch_size, replace=False)
-        return [self.buffer[ii] for ii in idx]
+        return [self.buffer[ii] for ii in idx], idx
 
     def len(self):
         return len(self.buffer)
