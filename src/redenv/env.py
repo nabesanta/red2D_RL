@@ -44,7 +44,7 @@ class RedmountainEnv(gym.Env):
         self.count = 0
 
         # 車に作用する力
-        self.force = 0.001
+        self.force = 0.0015
         # 重力
         self.gravity = 0.0025
         # 尻尾の摩擦
@@ -99,9 +99,12 @@ class RedmountainEnv(gym.Env):
             velocity = 0
         # 終了判定は、ゴールの位置にたどり着き速度が0以上
         terminated = bool(position >= self.goal_position and velocity >= self.goal_velocity)
+        if terminated:
+            reward = 1
+        else:
+            reward = 0
         # 毎ステップ-1.0
         self.count += 1
-        reward = -1
         # 状態は（位置、速度）
         self.state = (position, velocity)
         if self.render_mode == "human":

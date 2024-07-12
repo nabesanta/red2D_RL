@@ -35,18 +35,18 @@ np.random.seed(0)
 # 過去何ステップ分の状態量を使うか
 STATE_NUM = 10
 # 隠れ層の数
-HIDDEN_SIZE = 16
+HIDDEN_SIZE = 32
 # Q Network Definition
 class Q(nn.Module):
-    def __init__(self, state_num=STATE_NUM, action=3):
+    def __init__(self, state_num=STATE_NUM, action=3, hidden_size=HIDDEN_SIZE):
         super(Q, self).__init__()
         # state: 過去の状態量の数
         # action: 行動の数
         # → 各行動に対応したQ値を出力する
-        self.l1 = nn.Linear(state_num, 16)
-        self.l2 = nn.Linear(16, 16)
-        self.l3 = nn.Linear(16, 16)
-        self.l4 = nn.Linear(16, action)
+        self.l1 = nn.Linear(state_num, hidden_size)
+        self.l2 = nn.Linear(hidden_size, hidden_size)
+        self.l3 = nn.Linear(hidden_size, hidden_size)
+        self.l4 = nn.Linear(hidden_size, action)
         
         # Initialize weights
         nn.init.kaiming_normal_(self.l1.weight, nonlinearity='relu')
@@ -71,33 +71,24 @@ class DoubleDQNAgent():
     def __init__(self, state_num=STATE_NUM, action=3, epsilon=0.99, alpha=0.4, beta=0.4, beta_increment_per_sampling=0.001):
         self.main_model = Q(state_num, action).to(device) # 行動を学習するニューラルネット
         self.target_model = Q(state_num, action).to(device) # 状態価値を学習するニューラルネット
-        # ニューラルネットのパラメータを最適化する手法
+        # ニューラルネットのパラメータを最適化する手法, 勾配が難しい問題や学習が不安定な場合、逐次学習などに応用できる
         # lr: 学習率, α: 学習率を調整する係数, ε: ゼロ除算を防ぐもの
         self.optimizer = optim.RMSprop(self.main_model.parameters(), lr=0.01, alpha=0.99, eps=1e-08, weight_decay=0, momentum=0, centered=False)
         self.epsilon = epsilon # 探査率: ε-greedy法
         self.actions = [0, 1, 2] # ロボットのアクション番号
-        self.experienceMemory = [] # ローカル経験メモリ
-        self.experienceMemory_local = [] # グローバル経験メモリ
-        self.memSize = 1000 * 10# 1000ステップ * 10エピソード: 最初は多く探査するために多めに確保
-        self.update_target_frequency = 999
-        self.memPos = 0
+        self.experienceMemory = [] # 経験メモリ
+        self.memSize = 1000 * 10 # 1000ステップ * 10エピソード: 最初は多く探査するために多めに確保
+        self.update_target_frequency = 999 # ターゲットのニューラルネットの更新頻度
         # 学習関連
         self.batch_num = 32 # 学習のバッチサイズ
         self.gamma = 0.99 # 割引率
-        self.total_rewards = np.ones(10) * -1e3
-        self.loss = 0
+        self.total_rewards = np.ones(10) * -1e3 # 記録の良い報酬値の保管場所
+        self.loss = 0 # 損失を記録する際に必要なもの
         # 経験に使用
-        self.act_dim = 1
         self.replay_flag = 0
-        self.rb = PrioritizedReplayBuffer(self.memSize,
-                                env_dict ={"state": {"shape": 23}},
-                                alpha = 0.4)
-        self.maxPosition = 0 
-        self.alpha = alpha 
-        self.error = 0.01
+        self.rb = PrioritizedReplayBuffer(self.memSize, env_dict ={"state": {"shape": 23}}, alpha = alpha)
         self.beta = beta
         self.beta_increment_per_sampling = beta_increment_per_sampling
-        self.update_target_freq = 1 # 1エピソードごとに二つのニューラルネットを一致させる
 
 # 行動の価値関数の獲得
     def get_action_value(self, seq):
@@ -106,23 +97,23 @@ class DoubleDQNAgent():
         # ニューラルネットで予測
         pact = self.main_model.predict(x)
         # maxs: 最大値, indices: そのインデックス
+        # 1は次元を表す。xの出力は3次元なので、その中で最大値とそのインデックスを取得
         maxs, indices = torch.max(pact.data, 1)
         # 最大値のインデックスを取り出す
         pact = indices.cpu().numpy()[0]
         return pact
 
+    # 価値の最大となる行動を獲得
     def get_greedy_action(self, seq):
         action_index = self.get_action_value(seq)
         return self.actions[action_index]
 
     def reduce_epsilon(self, episode):
-        # エピソード0: 0.901, エピソード10: 0.082, エピソード100: 0.001
-        # self.epsilon = 0.001 + 0.9 / (1.0 + episode)
-        # 1000エピソードで0.01になる減少関数
+        # end_episodeで0.01になる減少関数
         initial_epsilon = 0.99
         final_epsilon = 0.01
-        decay_rate = (initial_epsilon - final_epsilon) / 100
-        # 更新する際に使用する
+        end_episode = 1000
+        decay_rate = (initial_epsilon - final_epsilon) / end_episode
         self.epsilon = max(final_epsilon, initial_epsilon - decay_rate * episode)
 
     def get_epsilon(self):
@@ -181,12 +172,14 @@ class DoubleDQNAgent():
             sum_absolute_TDerror += abs(self.buffer[i]) + 0.0001  # 最新の状態データを取り出す
         return sum_absolute_TDerror
 
+    # モデルの更新と経験の更新
     def update_model(self, num, step):
         # 何個経験が貯まったら学習を始めるか
         if num==0 and step ==999:
             self.replay_flag = 1
+        # 学習開始
         if num!=0 and self.replay_flag == 1:
-            # 抽出されたバッチとインデックス
+            # 抽出されたバッチとインデックス、重み
             batch = self.rb.sample(self.batch_num, beta = self.beta)["state"]
             indices_sample = self.rb.sample(self.batch_num, beta = self.beta)["indexes"]
             weights = self.rb.sample(self.batch_num, beta = self.beta)["weights"]
@@ -194,7 +187,7 @@ class DoubleDQNAgent():
             x = tensor(batch[:, 0:STATE_NUM].reshape((self.batch_num, -1)).astype(np.float32), requires_grad=True).to(device)
             new_x = tensor(batch[:, STATE_NUM+2:2*STATE_NUM+2].reshape((self.batch_num, -1)).astype(np.float32)).to(device)
             # 1, メインネットワークからQ値を取得
-            pact_array = self.main_model.predict(x)
+            model_array = self.main_model.predict(x)
             # 2, メインネットワークに次状態を入力して、目標値(target)の計算で利用するの行動を取得 
             pact_array_next = self.main_model.predict(new_x)
             maxs, indices_next = torch.max(pact_array_next.data, 1)
@@ -215,11 +208,11 @@ class DoubleDQNAgent():
                 # 上で取得したnext_actionsを用いて, 別のNNで獲得したnext_q_valuesを計算
                 targets[i, int(a):int(a+1)] = r + self.gamma * next_q_values[i, int(indices_cpu.numpy()[i]):int(indices_cpu.numpy()[i]+1)]
             # 先ほど計算したtarget値を変換
-            t = tensor(np.array(targets).reshape((self.batch_num, -1)).astype(np.float32)).to(device)
+            target = tensor(np.array(targets).reshape((self.batch_num, -1)).astype(np.float32)).to(device)
             # 勾配をクリアにする
             self.optimizer.zero_grad()
             # lossの計算をする
-            td_loss = nn.MSELoss(reduction='none')(pact_array, t)
+            td_loss = nn.MSELoss(reduction='none')(model_array, target)
             # TD誤差に重みを適用（weightsはnumpy.ndarrayであると仮定）
             weights_tensor = torch.tensor(weights, dtype=torch.float32)
             weights_tensor = weights_tensor.unsqueeze(1)
@@ -230,13 +223,18 @@ class DoubleDQNAgent():
 
             # 経験の優先度付けをするため、エラーの計算をする
             # errors = self.get_TDerror(x, batch[:, STATE_NUM], batch[:, STATE_NUM + 1], new_x, batch)
-            # 経験の優先度付けをするため、エラーの計算をする
+            # バッチサイズ分の経験に優先度付けをするため、各経験のエラーを計算する
             errors = td_loss.mean(dim=1).detach().cpu().numpy().flatten()
             # 優先度の更新
             self.rb.update_priorities(indices_sample,errors)
             # Q値の更新
-            if step % self.update_target_frequency == 0:
+            if step != 0 and step % self.update_target_frequency == 0:
                 print("update")
+                print(f'Loss: {loss.item()}')
+                # lossの記録
+                with open('/home/nabesanta/csv/redMountain/loss.csv', 'a') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([loss.item()])
                 self.target_model = copy.deepcopy(self.main_model)
         else:
             return
@@ -309,24 +307,24 @@ class Simulator:
             # 学習するなら、モデルの更新を行う
             if train:
                 # モデルの更新
-                self.agent.update_model(num,step)
+                self.agent.update_model(num, step)
                 # 1エピソードごとに減少させていく
                 self.agent.reduce_epsilon(num)
             if enable_log:
                 self.log.append(np.hstack([old_seq[0], action, reward]))
-            if done:
-                self.rb.on_episode_end()
             if movie:
                 img = self.env.render()
                 frames.append(Image.fromarray(img))
             step += 1
             print(step)
-        if movie:
+            if done:
+                break
+        if movie and num % 10 == 0:
             # GIFアニメーションの作成
             frames[0].save('output'+str(num)+'.gif', save_all=True, append_images=frames[1:], duration=40, loop=0)
         if enable_log:
             return total_reward, self.log
-        return total_reward, max_position
+        return total_reward, max_position, step
 
 if __name__ == '__main__':
     env = gym.make('redenv-v0')
@@ -345,7 +343,7 @@ if __name__ == '__main__':
         os.makedirs(directory, exist_ok=True)
         file_path = os.path.join(directory, 'reward.csv')
         for i in range(1000):
-            total_reward, max_position = sim.run(train=True, movie=True, num=i)
+            total_reward, max_position, step = sim.run(train=True, movie=True, num=i)
             with open('/home/nabesanta/csv/redMountain/reward.csv', 'a') as f:
                 writer = csv.writer(f)
-                writer.writerow([total_reward, max_position])
+                writer.writerow([i, total_reward, max_position, step])
