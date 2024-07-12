@@ -77,7 +77,7 @@ class DoubleDQNAgent():
         self.epsilon = epsilon # 探査率: ε-greedy法
         self.actions = [0, 1, 2] # ロボットのアクション番号
         self.experienceMemory = [] # 経験メモリ
-        self.memSize = 1000 * 10 # 1000ステップ * 10エピソード: 最初は多く探査するために多めに確保
+        self.memSize = 1000 * 1000 # 1000ステップ * 1000エピソード: 最初は多く探査するために多めに確保
         self.update_target_frequency = 999 # ターゲットのニューラルネットの更新頻度
         # 学習関連
         self.batch_num = 32 # 学習のバッチサイズ
@@ -173,7 +173,7 @@ class DoubleDQNAgent():
         return sum_absolute_TDerror
 
     # モデルの更新と経験の更新
-    def update_model(self, num, step):
+    def update_model(self, num, step, done):
         # 何個経験が貯まったら学習を始めるか
         if num==0 and step ==999:
             self.replay_flag = 1
@@ -228,7 +228,7 @@ class DoubleDQNAgent():
             # 優先度の更新
             self.rb.update_priorities(indices_sample,errors)
             # Q値の更新
-            if step != 0 and step % self.update_target_frequency == 0:
+            if (step != 0 and step % self.update_target_frequency == 0) or (step != 0 and done == True):
                 print("update")
                 print(f'Loss: {loss.item()}')
                 # lossの記録
@@ -267,8 +267,10 @@ class Simulator:
         total_reward = 0
         step = 0 # ステップ数
         done = False # ゲーム終了フラグ
-        max_position = 0
-        max_diff = 0
+        max_position_left = 0
+        max_position_right= 0
+        max_diff_left = 0
+        max_diff_right = 0
         frames = [] # フレームを保存するリスト
         # 環境のリセット
         init_position, _ = self.env.reset() 
@@ -288,10 +290,16 @@ class Simulator:
             current_position = observation[0]
             current_velocity = observation[1]
             # 移動量の計算
-            diff_distance = abs(current_position - init_position[0])
-            if (max_diff < diff_distance):
-                max_diff = diff_distance
-                max_position = current_position
+            if (current_position < init_position[0]):
+                diff_distance_left = abs(current_position - init_position[0])
+                if (max_diff_left < diff_distance_left):
+                    max_diff_left = diff_distance_left
+                    max_position_left = current_position
+            else:
+                diff_distance_right = abs(current_position - init_position[0])
+                if (max_diff_right < diff_distance_right):
+                    max_diff_right = diff_distance_right
+                    max_position_right = current_position
             # 報酬の加算
             total_reward += reward
             # observation: [position, velocity]
@@ -307,7 +315,7 @@ class Simulator:
             # 学習するなら、モデルの更新を行う
             if train:
                 # モデルの更新
-                self.agent.update_model(num, step)
+                self.agent.update_model(num, step, done)
                 # 1エピソードごとに減少させていく
                 self.agent.reduce_epsilon(num)
             if enable_log:
@@ -324,7 +332,7 @@ class Simulator:
             frames[0].save('output'+str(num)+'.gif', save_all=True, append_images=frames[1:], duration=40, loop=0)
         if enable_log:
             return total_reward, self.log
-        return total_reward, max_position, step
+        return total_reward, max_position_left, max_position_right, step
 
 if __name__ == '__main__':
     env = gym.make('redenv-v0')
@@ -343,7 +351,7 @@ if __name__ == '__main__':
         os.makedirs(directory, exist_ok=True)
         file_path = os.path.join(directory, 'reward.csv')
         for i in range(1000):
-            total_reward, max_position, step = sim.run(train=True, movie=True, num=i)
+            total_reward, max_position_left, max_position_right, step = sim.run(train=True, movie=True, num=i)
             with open('/home/nabesanta/csv/redMountain/reward.csv', 'a') as f:
                 writer = csv.writer(f)
-                writer.writerow([i, total_reward, max_position, step])
+                writer.writerow([i, total_reward, max_position_left, max_position_right, step])
