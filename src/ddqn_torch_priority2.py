@@ -112,12 +112,13 @@ class DoubleDQNAgent():
         self.target_model = Q(state_num, action).to(device) # 状態価値を学習するニューラルネット
         # ニューラルネットのパラメータを最適化する手法, 勾配が難しい問題や学習が不安定な場合、逐次学習などに応用できる
         # lr: 学習率, α: 学習率を調整する係数, ε: ゼロ除算を防ぐもの
-        self.optimizer = optim.AdamW(self.main_model.parameters(), lr=1e-06)
+        # self.optimizer = optim.AdamW(self.main_model.parameters(), lr=1e-06)
+        self.optimizer = optim.RMSprop(self.main_model.parameters(), lr=0.01, alpha=0.99, eps=1e-08, weight_decay=0, momentum=0, centered=False)
         self.epsilon = epsilon # 探査率: ε-greedy法
         self.actions = [0, 1, 2] # ロボットのアクション番号
         self.experienceMemory = [] # 経験メモリ
-        self.memSize = 1000 * 10 # 1000ステップ * 10エピソード: 最初は多く探査するために多めに確保
-        self.update_target_frequency = 999 # ターゲットのニューラルネットの更新頻度
+        self.memSize = 10000 * 10 # 1000ステップ * 10エピソード: 最初は多く探査するために多めに確保
+        self.update_target_frequency = 1000 # ターゲットのニューラルネットの更新頻度
         # 学習関連
         self.batch_num = 32 # 学習のバッチサイズ
         self.gamma = 0.99 # 割引率
@@ -214,7 +215,7 @@ class DoubleDQNAgent():
     # モデルの更新と経験の更新
     def update_model(self, num, step, done):
         # 何個経験が貯まったら学習を始めるか
-        if num==0 and step ==999:
+        if step ==10000:
             self.replay_flag = 1
         # 学習開始
         if num!=0 and self.replay_flag == 1:
@@ -288,7 +289,7 @@ class Simulator:
         # 2D RED mountain 
         self.env = environment
         # 最高ステップ数
-        self.maxStep = 1000
+        self.maxStep = 10000
         # レンダリング
         self.Monitor = False
         # 過去5ステップ
@@ -296,6 +297,8 @@ class Simulator:
         # 状態履歴配列の初期化
         self.reset_seq()
         self.log = []
+        # 総合ステップ
+        self.total_step = 0
 
     def reset_seq(self):
         self.seq = np.zeros(self.num_seq) 
@@ -317,7 +320,7 @@ class Simulator:
         init_position, _ = self.env.reset() 
         # 履歴行列のリセット
         self.reset_seq() 
-        while not done and step < self.maxStep:
+        while not done:
             # レンダリング
             if self.Monitor:
                 img = self.env.render()
@@ -356,19 +359,18 @@ class Simulator:
             # 学習するなら、モデルの更新を行う
             if train:
                 # モデルの更新
-                train_done = self.agent.update_model(num, step, done)
+                train_done = self.agent.update_model(num, self.total_step, done)
                 # 1エピソードごとに減少させていく
                 self.agent.reduce_epsilon(num)
                 train = train_done
             if enable_log:
                 self.log.append(np.hstack([old_seq[0], action, reward]))
-            if movie:
+            if (num % 10 == 0) and movie:
                 img = self.env.render()
                 frames.append(Image.fromarray(img))
             step += 1
-            print(step)
-            if done:
-                break
+            self.total_step += 1
+        print("done!!!!!!!!!!!!!")
         if movie and num % 10 == 0:
             # GIFアニメーションの作成
             frames[0].save('output'+str(num)+'.gif', save_all=True, append_images=frames[1:], duration=40, loop=0)
