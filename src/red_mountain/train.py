@@ -235,14 +235,16 @@ class DoubleDQNAgent():
         if (loss == 0.0):
             return False
         if (step != 0 and done == True):
-            print("update")
             print(f'Loss: {loss}')
-            # lossの記録
-            with open('/home/nabesanta/csv/redMountain/loss.csv', 'a') as f:
+            with open('/home/nabesanta/csv/redMountain/done_loss.csv', 'a') as f:
                 writer = csv.writer(f)
                 writer.writerow([loss])
         if np.mod(step, self.update_target_frequency) == 0:
             self.target_model = copy.deepcopy(self.main_model)
+            print("update")
+            with open('/home/nabesanta/csv/redMountain/update_loss.csv', 'a') as f:
+                writer = csv.writer(f)
+                writer.writerow([loss])
         return True
 
 # Simulator（変更なし）
@@ -284,7 +286,7 @@ class Simulator:
         init_position, _ = self.env.reset() 
         # 履歴行列のリセット
         self.reset_seq() 
-        while not done:
+        while (done != True and step <= self.maxStep):
             # レンダリング
             if self.Monitor:
                 img = self.env.render()
@@ -329,17 +331,19 @@ class Simulator:
                 train = train_done
             if enable_log:
                 self.log.append(np.hstack([old_seq[0], action, reward]))
-            if (num % 10 == 0) and movie:
+            if (num % 100 == 0) and movie and step <= 10000:
                 img = self.env.render()
                 frames.append(Image.fromarray(img))
             step += 1
             self.total_step += 1
-        print("done!!!!!!!!!!!!!")
-        if movie and num % 10 == 0:
+            print(step)
+        if done:
+            print("done!!!!!!!!!!!!!")
+        else:
+            print("limit!!!!!!!!!!!!")
+        if movie and num % 100 == 0 and step <= 10000:
             # GIFアニメーションの作成
             frames[0].save('output'+str(num)+'_'+str(step)+'.gif', save_all=True, append_images=frames[1:], duration=40, loop=0)
-        if enable_log:
-            return total_reward, self.log
         return total_reward, max_position_left, max_position_right, step
 
 if __name__ == '__main__':

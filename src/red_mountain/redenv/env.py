@@ -100,11 +100,14 @@ class RedmountainEnv(gym.Env):
         # 終了判定は、ゴールの位置にたどり着き速度が0以上
         terminated = bool(position >= self.goal_position and velocity >= self.goal_velocity)
         if terminated:
-            reward = 1
+            reward = 2
+        elif(self.count == 9999):
+            reward = -2
         else:
             reward = -1
         # 毎ステップ-1.0
         self.count += 1
+        print(self.count)
         # 状態は（位置、速度）
         self.state = (position, velocity)
         if self.render_mode == "human":
@@ -118,6 +121,7 @@ class RedmountainEnv(gym.Env):
         options: Optional[dict] = None,
     ):
         super().reset(seed=seed)
+        self.count = 0
         # Note that if you use custom reset bounds, it may lead to out-of-bound
         # state/observations.
         # 初期位置を-0.6から-0.4の間に収める
