@@ -18,11 +18,6 @@ import chainer.functions as F
 import chainer.links as L
 from chainer import Variable, optimizers, serializers
 from chainer import Chain
-# torch
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 
 # 各種設定
 np.random.seed(0)
