@@ -121,7 +121,7 @@ class DoubleDQNAgent():
         self.update_target_frequency = 1000 # ターゲットのニューラルネットの更新頻度
         # 学習関連
         self.batch_num = 32 # 学習のバッチサイズ
-        self.gamma = 0.99 # 割引率
+        self.gamma = 0.9 # 割引率
         self.total_rewards = np.ones(10) * -1e3 # 記録の良い報酬値の保管場所
         self.loss = 0 # 損失を記録する際に必要なもの
         # 経験に使用

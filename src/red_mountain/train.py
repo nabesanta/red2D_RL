@@ -2,6 +2,7 @@
 import os
 import csv
 import copy
+import time
 import numpy as np
 from PIL import Image
 from collections import deque
@@ -13,11 +14,12 @@ from chainer import cuda, Function, Variable, optimizers, serializers
 from chainer import Chain
 import chainer.functions as F
 import chainer.links as L
+# keras
+from keras import backend as K
+import tensorflow as tf
 
-# 各種設定
-np.random.seed(0)
 # 過去何ステップ分の状態量を使うか
-STATE_NUM = 10
+STATE_NUM = 5
 # 隠れ層の数
 HIDDEN_SIZE = 100
 # Q Network Definition
@@ -33,11 +35,28 @@ class Q(Chain):
         self.l4 = L.Linear(hidden_size, action)
 
     def predict(self, x):
+        x = self.normalize(x)
         h1 = F.relu(self.l1(x))
+        h1 = F.dropout(h1, ratio=0.5)  # ドロップアウトを追加
         h2 = F.relu(self.l2(h1))
+        h2 = F.dropout(h2, ratio=0.5)  # ドロップアウトを追加
         h3 = F.relu(self.l3(h2))
-        y = self.l4(h3)  # Remove ReLU from the output layer
+        h3 = F.dropout(h3, ratio=0.5)  # ドロップアウトを追加
+        y = self.l4(h3)
         return y
+
+    def normalize(self, x):
+        min_val = -1.2
+        max_val = 0.6
+        return (x - min_val) / (max_val - min_val)
+
+def huberloss(y_true, y_pred):
+    err = y_true - y_pred
+    cond = K.abs(err) < 1.0
+    L2 = 0.5 * K.square(err)
+    L1 = (K.abs(err) - 0.5)
+    loss = tf.where(cond, L2, L1)  # Keras does not cover where function in tensorflow :-(
+    return K.mean(loss)
 
 class PrioritizedReplayBuffer:
     def __init__(self, buffer_size):
@@ -65,6 +84,8 @@ class PrioritizedReplayBuffer:
         self.priorities[self.index] = self.priorities.max()
         self.index = (self.index + 1) % self.buffer_size # 余り
 
+    # TD誤差が大きいほど、その経験がエージェントの現在の理解と目標の間のギャップを示し、より学習の価値が高いと見なされます
+    # 優先度が高いものをサンプリングして学習させる
     def sample(self, batch_size, alpha=0.6, beta=0.4):
         if len(self.buffer) < self.buffer_size:
             priorities = self.priorities[:self.index]
@@ -100,13 +121,13 @@ class DoubleDQNAgent():
         # ニューラルネットのパラメータを最適化する手法, 勾配が難しい問題や学習が不安定な場合、逐次学習などに応用できる
         # lr: 学習率, α: 学習率を調整する係数, ε: ゼロ除算を防ぐもの
         print("Initizlizing Optimizer")
-        self.optimizer = optimizers.RMSpropGraves(lr=0.00025, alpha=0.95, momentum=0.95, eps=0.01)
+        self.optimizer = optimizers.RMSpropGraves(lr=0.0001, alpha=0.9, momentum=0.9, eps=0.0001)
         self.optimizer.setup(self.main_model)
         
         # 経験関連
         self.batch_num = 32 # 学習のバッチサイズ
         self.initial_exploration = 10000  # 1000ステップ * 10エピソード: Initial exploratoin. original: 5x10^4
-        self.memSize = 10000 * 5 # 1000ステップ * 100エピソード: 最初は多く探査するために多めに確保
+        self.memSize = 10000 * 10 # 1000ステップ * 100エピソード: 最初は多く探査するために多めに確保
 
         self.epsilon = epsilon # 探査率: ε-greedy法
         self.actions = [0, 1, 2] # ロボットのアクション番号
@@ -236,13 +257,13 @@ class DoubleDQNAgent():
             return False
         if (step != 0 and done == True):
             print(f'Loss: {loss}')
-            with open('/home/nabesanta/csv/redMountain/done_loss.csv', 'a') as f:
+            with open('/home/nabesanta/csv/redMountain/drop_norm_2/done_loss.csv', 'a') as f:
                 writer = csv.writer(f)
                 writer.writerow([loss])
         if np.mod(step, self.update_target_frequency) == 0:
             self.target_model = copy.deepcopy(self.main_model)
             print("update")
-            with open('/home/nabesanta/csv/redMountain/update_loss.csv', 'a') as f:
+            with open('/home/nabesanta/csv/redMountain/drop_norm_2/update_loss.csv', 'a') as f:
                 writer = csv.writer(f)
                 writer.writerow([loss])
         return True
@@ -329,19 +350,18 @@ class Simulator:
                 # 1エピソードごとに減少させていく
                 self.agent.reduce_epsilon(num)
                 train = train_done
-            if enable_log:
-                self.log.append(np.hstack([old_seq[0], action, reward]))
-            if (num % 100 == 0) and movie and step <= 10000:
+            else:
                 img = self.env.render()
                 frames.append(Image.fromarray(img))
+            if enable_log:
+                self.log.append(np.hstack([old_seq[0], action, reward]))
             step += 1
             self.total_step += 1
-            print(step)
         if done:
             print("done!!!!!!!!!!!!!")
         else:
             print("limit!!!!!!!!!!!!")
-        if movie and num % 100 == 0 and step <= 10000:
+        if train == False:
             # GIFアニメーションの作成
             frames[0].save('output'+str(num)+'_'+str(step)+'.gif', save_all=True, append_images=frames[1:], duration=40, loop=0)
         return total_reward, max_position_left, max_position_right, step
@@ -358,12 +378,17 @@ if __name__ == '__main__':
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     test_highscore = 0.0
-    with open("/home/nabesanta/csv/redMountain/log.csv", "w") as fw:
+    with open("/home/nabesanta/csv/redMountain/drop_norm_2/log.csv", "w") as fw:
         directory = '/home/nabesanta/csv/redMountain/'
         os.makedirs(directory, exist_ok=True)
         file_path = os.path.join(directory, 'reward.csv')
         for i in range(1000):
             total_reward, max_position_left, max_position_right, step = sim.run(train=True, movie=True, num=i)
-            with open('/home/nabesanta/csv/redMountain/reward.csv', 'a') as f:
+            with open('/home/nabesanta/csv/redMountain/drop_norm_2/reward_true.csv', 'a') as f:
+                writer = csv.writer(f)
+                writer.writerow([i, total_reward, max_position_left, max_position_right, step])
+        for i in range(10):
+            total_reward, max_position_left, max_position_right, step = sim.run(train=False, movie=True, num=i)
+            with open('/home/nabesanta/csv/redMountain/drop_norm_2/reward_false.csv', 'a') as f:
                 writer = csv.writer(f)
                 writer.writerow([i, total_reward, max_position_left, max_position_right, step])

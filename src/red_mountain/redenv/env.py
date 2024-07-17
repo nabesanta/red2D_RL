@@ -100,14 +100,13 @@ class RedmountainEnv(gym.Env):
         # 終了判定は、ゴールの位置にたどり着き速度が0以上
         terminated = bool(position >= self.goal_position and velocity >= self.goal_velocity)
         if terminated:
-            reward = 2
+            reward = 1
         elif(self.count == 9999):
-            reward = -2
-        else:
             reward = -1
+        else:
+            reward = 0
         # 毎ステップ-1.0
         self.count += 1
-        print(self.count)
         # 状態は（位置、速度）
         self.state = (position, velocity)
         if self.render_mode == "human":
